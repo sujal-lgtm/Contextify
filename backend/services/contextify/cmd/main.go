@@ -16,7 +16,10 @@ import (
 )
 
 func main() {
-	cfg := config.LoadConfig()
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		logrus.Fatalf("Failed to load config: %v", err)
+	}
 
 	router := mux.NewRouter()
 	router.HandleFunc("/health", handlers.HealthHandler).Methods("GET")
