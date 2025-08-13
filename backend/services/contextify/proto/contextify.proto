@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package contextify;
+option go_package = "github.com/sujal-lgtm/Contextify/backend/services/contextify/proto";
+
+service ContextifyService {
+  rpc Ping (PingRequest) returns (PingResponse);
+}
+
+message PingRequest {
+  string message = 1;
+}
+
+message PingResponse {
+  string reply = 1;
+}
