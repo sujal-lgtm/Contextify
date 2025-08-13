@@ -7,6 +7,7 @@ import (
 	"github.com/sirupsen/logrus"
 	pb "github.com/sujal-lgtm/Contextify/backend/services/contextify/proto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 )
 
 type server struct {
@@ -24,6 +25,7 @@ func StartGrpcServer(port string) func() {
 	}
 
 	grpcServer := grpc.NewServer()
+	reflection.Register(grpcServer)
 	pb.RegisterContextifyServiceServer(grpcServer, &server{})
 
 	go func() {
