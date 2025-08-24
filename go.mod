@@ -1,3 +1,3 @@
 module github.com/sujal-lgtm/Contextify
 
-go 1.24.6
+go 1.22

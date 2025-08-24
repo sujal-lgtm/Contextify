@@ -1,6 +1,8 @@
 module github.com/sujal-lgtm/Contextify/backend/services/contextify
 
-go 1.24.6
+go 1.23.0
+
+toolchain go1.24.6
 
 require (
 	github.com/gorilla/mux v1.8.1
@@ -11,6 +13,7 @@ require (
 )
 
 require (
+	github.com/stretchr/testify v1.8.0 // indirect
 	golang.org/x/net v0.40.0 // indirect
 	golang.org/x/sys v0.33.0 // indirect
 	golang.org/x/text v0.25.0 // indirect
