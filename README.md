@@ -2,7 +2,7 @@
 
 A robust, production-ready event-driven system for detecting anomalies in microservices with real-time monitoring and alerting capabilities.
 
-## ��️ Architecture
+## Architecture
 
 ```
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
@@ -27,7 +27,3 @@ A robust, production-ready event-driven system for detecting anomalies in micros
 - **Graceful Shutdown**: Proper service lifecycle management
 - **Production Ready**: Security, logging, and monitoring
 - **Docker Support**: Complete containerization
-
-## 🛠️ Services
-
-###
