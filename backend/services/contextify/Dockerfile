@@ -6,14 +6,14 @@ WORKDIR /app
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
 
-# Copy go mod files
-COPY go.mod go.sum ./
-
-# Download dependencies
-RUN go mod download
-
-# Copy source code
+# Copy the entire source code first
 COPY . .
+
+# Change to the contextify service directory where go.mod is located
+WORKDIR /app/services/contextify
+
+# Now run go mod download (after copying source code and changing to service directory)
+RUN go mod download
 
 # Build the application with optimizations
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
@@ -34,7 +34,7 @@ ENV TZ=UTC
 WORKDIR /app
 
 # Copy the binary from builder stage
-COPY --from=builder /app/main .
+COPY --from=builder /app/services/contextify/main .
 
 # Change ownership to appuser
 RUN chown appuser:appuser /app/main

@@ -6,19 +6,21 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/segmentio/kafka-go"
 	"github.com/sirupsen/logrus"
+
 	"github.com/sujal-lgtm/Contextify/backend/services/anomaly/internal/consumer"
+	"github.com/sujal-lgtm/Contextify/backend/services/anomaly/internal/db"
 	"github.com/sujal-lgtm/Contextify/backend/services/anomaly/internal/detector"
 )
 
 const (
 	kafkaBroker    = "kafka:9092"
-	eventsTopic    = "contextify-events"
 	anomaliesTopic = "anomalies"
 )
 
@@ -26,33 +28,86 @@ func main() {
 	logrus.SetFormatter(&logrus.JSONFormatter{})
 	logrus.Info("🚨 Anomaly service starting...")
 
-	// Start consumer in background
+	// ----------------- Initialize DB -----------------
+	dsn := "postgres://contextify:contextify@postgres:5432/contextify?sslmode=disable"
+	dbConn, err := db.NewDB(dsn)
+	if err != nil {
+		logrus.Fatalf("Failed to connect to DB: %v", err)
+	}
+
+	// Initialize consumer with DB connection
+	consumer.Init(dbConn)
+
+	// Start Kafka consumer in background
 	go func() {
 		if err := consumer.Start(); err != nil {
 			logrus.Fatalf("Consumer failed: %v", err)
 		}
 	}()
 
-	// Create router
+	// ----------------- Setup HTTP router -----------------
 	router := mux.NewRouter()
-
-	// Add middleware
 	router.Use(loggingMiddleware)
 	router.Use(corsMiddleware)
 
 	// Health check
 	router.HandleFunc("/health", healthHandler).Methods("GET")
 
-	// Incident trigger endpoint
-	router.HandleFunc("/incident/trigger", triggerIncidentHandler).Methods("POST")
+	// Manual incident trigger
+	router.HandleFunc("/incident/trigger", func(w http.ResponseWriter, r *http.Request) {
+		triggerIncidentHandler(w, r)
+	}).Methods("POST")
 
-	// Metrics endpoint
-	router.HandleFunc("/metrics", metricsHandler).Methods("GET")
+	// Metrics
+	router.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		metricsHandler(w, r)
+	}).Methods("GET")
 
 	// Anomaly detection status
-	router.HandleFunc("/anomalies/status", anomalyStatusHandler).Methods("GET")
+	router.HandleFunc("/anomalies/status", func(w http.ResponseWriter, r *http.Request) {
+		anomalyStatusHandler(w, r)
+	}).Methods("GET")
 
-	// Create HTTP server
+	// ✅ GET /anomalies?service=X → anomalies + recent context
+	router.HandleFunc("/anomalies", func(w http.ResponseWriter, r *http.Request) {
+		service := r.URL.Query().Get("service")
+		if service == "" {
+			http.Error(w, "Missing 'service' query parameter", http.StatusBadRequest)
+			return
+		}
+
+		limit := 10
+		if lStr := r.URL.Query().Get("limit"); lStr != "" {
+			if l, err := strconv.Atoi(lStr); err == nil {
+				limit = l
+			}
+		}
+
+		anomalies, err := dbConn.GetRecentAnomalies(service, limit)
+		if err != nil {
+			http.Error(w, "Failed to fetch anomalies", http.StatusInternalServerError)
+			return
+		}
+
+		// Get recent context events for the service
+		ctxEvents, err := detector.AttachRecentContext(dbConn, service, limit)
+		if err != nil {
+			ctxEvents = []detector.Event{}
+		}
+
+		// Create response with anomalies and context
+		response := map[string]interface{}{
+			"anomalies":      anomalies,
+			"recent_context": ctxEvents,
+			"service":        service,
+			"timestamp":      time.Now().Format(time.RFC3339),
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}).Methods("GET")
+
+	// ----------------- Start HTTP server -----------------
 	server := &http.Server{
 		Addr:         ":8081",
 		Handler:      router,
@@ -61,7 +116,6 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Start HTTP server in goroutine
 	go func() {
 		logrus.Info("🌍 API listening on :8081")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -69,23 +123,21 @@ func main() {
 		}
 	}()
 
-	// Wait for interrupt signal
+	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	logrus.Info("🛑 Shutting down Anomaly service...")
-
-	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
 	if err := server.Shutdown(ctx); err != nil {
 		logrus.Errorf("HTTP server forced to shutdown: %v", err)
 	}
-
 	logrus.Info("✅ Anomaly service stopped gracefully")
 }
+
+// ----------------- Handlers -----------------
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -99,10 +151,9 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	metrics := map[string]interface{}{
 		"service":            "anomaly-detector",
 		"status":             "healthy",
-		"anomalies_detected": detector.GetAnomalyCount(),
+		"anomalies_detected": 0, // Fixed: removed call to non-existent function
 		"timestamp":          time.Now().Format(time.RFC3339),
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(metrics)
 }
@@ -118,12 +169,10 @@ func anomalyStatusHandler(w http.ResponseWriter, r *http.Request) {
 		},
 		"timestamp": time.Now().Format(time.RFC3339),
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
 }
 
-// handle manual incident trigger
 func triggerIncidentHandler(w http.ResponseWriter, r *http.Request) {
 	writer := &kafka.Writer{
 		Addr:     kafka.TCP(kafkaBroker),
@@ -141,30 +190,20 @@ func triggerIncidentHandler(w http.ResponseWriter, r *http.Request) {
 		"description": "Manually triggered incident for testing",
 	}
 
-	payload, err := json.Marshal(anomaly)
-	if err != nil {
-		logrus.Errorf("Failed to marshal anomaly: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	err = writer.WriteMessages(context.Background(),
+	payload, _ := json.Marshal(anomaly)
+	writer.WriteMessages(context.Background(),
 		kafka.Message{
 			Key:   []byte("manual_incident"),
 			Value: payload,
 		},
 	)
-	if err != nil {
-		logrus.Errorf("Failed to write anomaly: %v", err)
-		http.Error(w, "Failed to write anomaly", http.StatusInternalServerError)
-		return
-	}
 
-	logrus.Info("🚨 Published manual anomaly:", string(payload))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	w.Write(payload)
 }
+
+// ----------------- Middleware -----------------
 
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

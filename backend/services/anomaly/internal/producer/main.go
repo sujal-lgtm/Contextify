@@ -3,125 +3,83 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/segmentio/kafka-go"
-	"github.com/sirupsen/logrus"
 )
 
 type Event struct {
-	Service     string `json:"service"`
-	Timestamp   int64  `json:"timestamp"`
-	LatencyMs   int    `json:"latency_ms"`
-	Status      string `json:"status"`
-	QueueLength int    `json:"queue_length"`
+	TraceID   string `json:"trace_id"`
+	Service   string `json:"service"`
+	Level     string `json:"level"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
 }
 
 func main() {
-	logrus.SetFormatter(&logrus.JSONFormatter{})
-	logrus.Info("🚀 Anomaly producer starting...")
+	// Get Kafka configuration from environment
+	brokers := os.Getenv("KAFKA_BROKERS")
+	if brokers == "" {
+		brokers = "localhost:9092"
+	}
 
-	w := kafka.NewWriter(kafka.WriterConfig{
-		Brokers: []string{"kafka:9092"},
-		Topic:   "contextify-events",
+	topic := os.Getenv("KAFKA_TOPIC")
+	if topic == "" {
+		topic = "contextify-events"
+	}
+
+	// Create Kafka writer
+	writer := kafka.NewWriter(kafka.WriterConfig{
+		Brokers:  []string{brokers},
+		Topic:    topic,
+		Balancer: &kafka.LeastBytes{},
 	})
-	defer w.Close()
+	defer writer.Close()
 
-	// Wait for Kafka to be ready
-	time.Sleep(5 * time.Second)
+	// Graceful shutdown
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 
-	// Create a channel to handle graceful shutdown
-	done := make(chan bool)
+	log.Printf("🚀 Anomaly producer starting, publishing to topic: %s", topic)
 
-	// Handle graceful shutdown
-	go func() {
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
+	// Simulate producing events
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 
-		logrus.Info("🛑 Shutting down producer...")
-		done <- true
-	}()
-
-	// Produce events
-	go func() {
-		eventCounter := 0
-		for {
-			select {
-			case <-done:
-				return
-			default:
-				now := time.Now().UnixMilli()
-
-				// Generate realistic events with some anomalies
-				events := generateEvents(now, eventCounter)
-
-				for _, e := range events {
-					select {
-					case <-done:
-						return
-					default:
-						b, _ := json.Marshal(e)
-						if err := w.WriteMessages(context.Background(), kafka.Message{Value: b}); err != nil {
-							logrus.Errorf("Failed to write message: %v", err)
-						} else {
-							logrus.Infof("✅ Produced event %d: %s", eventCounter, string(b))
-							eventCounter++
-						}
-						time.Sleep(250 * time.Millisecond)
-					}
-				}
-
-				time.Sleep(5 * time.Second) // Wait before next batch
+	for {
+		select {
+		case <-ticker.C:
+			event := Event{
+				TraceID:   "test-trace-" + time.Now().Format("20060102150405"),
+				Service:   "anomaly-service",
+				Level:     "INFO",
+				Message:   "Test event from anomaly producer",
+				Timestamp: time.Now().Format(time.RFC3339),
 			}
+
+			bytes, err := json.Marshal(event)
+			if err != nil {
+				log.Printf("Failed to marshal event: %v", err)
+				continue
+			}
+
+			err = writer.WriteMessages(context.Background(), kafka.Message{
+				Key:   []byte(event.TraceID),
+				Value: bytes,
+			})
+			if err != nil {
+				log.Printf("Failed to publish event: %v", err)
+			} else {
+				log.Printf("�� Published event: %s", event.TraceID)
+			}
+
+		case <-signals:
+			log.Println("🛑 Anomaly producer shutting down...")
+			return
 		}
-	}()
-
-	<-done
-	logrus.Info("✅ Producer stopped gracefully")
-}
-
-func generateEvents(baseTime int64, counter int) []Event {
-	events := []Event{}
-
-	// Normal events
-	events = append(events, Event{
-		Service:     "contextify",
-		Timestamp:   baseTime + int64(counter*1000),
-		LatencyMs:   120,
-		Status:      "success",
-		QueueLength: 15,
-	})
-
-	// Latency spike
-	events = append(events, Event{
-		Service:     "contextify",
-		Timestamp:   baseTime + int64((counter+1)*1000),
-		LatencyMs:   450,
-		Status:      "success",
-		QueueLength: 20,
-	})
-
-	// Error events
-	events = append(events, Event{
-		Service:     "contextify",
-		Timestamp:   baseTime + int64((counter+2)*1000),
-		LatencyMs:   130,
-		Status:      "error",
-		QueueLength: 25,
-	})
-
-	// Queue length spike
-	events = append(events, Event{
-		Service:     "contextify",
-		Timestamp:   baseTime + int64((counter+3)*1000),
-		LatencyMs:   110,
-		Status:      "success",
-		QueueLength: 150,
-	})
-
-	return events
+	}
 }

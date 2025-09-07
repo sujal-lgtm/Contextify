@@ -1,70 +1,98 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/sujal-lgtm/Contextify/backend/pkg/producer"
 
 	"github.com/sirupsen/logrus"
 )
 
-// StartIncidentHandler handles the POST /incident/start endpoint
+var (
+	publisher = producer.NewPublisher([]string{"kafka:9092"}, "contextify-events")
+)
+
+type IncidentRequest struct {
+	Service string `json:"service"`
+	Error   string `json:"error"`
+	Latency int64  `json:"latency_ms"`
+}
+
 func StartIncidentHandler(w http.ResponseWriter, r *http.Request) {
-	logrus.Info("🚨 Manual incident triggered")
-
-	// Create incident response
-	response := map[string]interface{}{
-		"status":      "incident_triggered",
-		"service":     "contextify",
-		"timestamp":   time.Now().Format(time.RFC3339),
-		"message":     "Manual incident triggered successfully",
-		"incident_id": generateIncidentID(),
-		"severity":    "medium",
+	var req IncidentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
 	}
 
-	// Return success response
+	// Build event for Kafka
+	event := map[string]interface{}{
+		"service":  req.Service,
+		"error":    req.Error,
+		"latency":  req.Latency,
+		"detected": time.Now().UTC(),
+	}
+
+	// Publish event to Kafka
+	if err := publisher.PublishEvent(context.Background(), req.Service, event); err != nil {
+		logrus.Errorf("failed to publish incident event: %v", err)
+		http.Error(w, "failed to publish event", http.StatusInternalServerError)
+		return
+	}
+
+	// Respond as API
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "incident started",
+		"service": req.Service,
+	})
 }
 
-// StopIncidentHandler handles the POST /incident/stop endpoint
 func StopIncidentHandler(w http.ResponseWriter, r *http.Request) {
-	logrus.Info("✅ Manual incident stopped")
-
-	response := map[string]interface{}{
-		"status":    "incident_resolved",
-		"service":   "contextify",
-		"timestamp": time.Now().Format(time.RFC3339),
-		"message":   "Manual incident resolved successfully",
+	var req IncidentRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid payload", http.StatusBadRequest)
+		return
 	}
 
+	// Build event for Kafka
+	event := map[string]interface{}{
+		"service":  req.Service,
+		"error":    req.Error,
+		"latency":  req.Latency,
+		"resolved": time.Now().UTC(),
+		"action":   "stop",
+	}
+
+	// Publish event to Kafka
+	if err := publisher.PublishEvent(context.Background(), req.Service, event); err != nil {
+		logrus.Errorf("failed to publish incident stop event: %v", err)
+		http.Error(w, "failed to publish event", http.StatusInternalServerError)
+		return
+	}
+
+	// Respond as API
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "incident stopped",
+		"service": req.Service,
+	})
 }
 
-// MetricsHandler handles the GET /metrics endpoint
 func MetricsHandler(w http.ResponseWriter, r *http.Request) {
-	metrics := map[string]interface{}{
-		"service":          "contextify",
-		"status":           "healthy",
-		"uptime":           getUptime(),
-		"version":          "1.0.0",
-		"timestamp":        time.Now().Format(time.RFC3339),
-		"active_incidents": 0,
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(metrics)
-}
-
-func generateIncidentID() string {
-	return fmt.Sprintf("inc_%d", time.Now().Unix())
-}
-
-func getUptime() string {
-	// This would typically come from a service that tracks startup time
-	return "1h 23m 45s"
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "ok",
+		"service":   "contextify",
+		"timestamp": time.Now().UTC(),
+		"endpoints": map[string]string{
+			"health":         "/health",
+			"incident_start": "/incident/start",
+			"incident_stop":  "/incident/stop",
+			"metrics":        "/metrics",
+		},
+	})
 }

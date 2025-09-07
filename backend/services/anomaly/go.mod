@@ -6,6 +6,7 @@ toolchain go1.24.6
 
 require (
 	github.com/gorilla/mux v1.8.1
+	github.com/lib/pq v1.10.9
 	github.com/segmentio/kafka-go v0.4.49
 	github.com/sirupsen/logrus v1.9.3
 )

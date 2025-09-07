@@ -11,6 +11,8 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
 	"github.com/sujal-lgtm/Contextify/backend/services/contextify/internal/config"
+	"github.com/sujal-lgtm/Contextify/backend/services/contextify/internal/consumer"
+	"github.com/sujal-lgtm/Contextify/backend/services/contextify/internal/db"
 	"github.com/sujal-lgtm/Contextify/backend/services/contextify/internal/grpcserver"
 	"github.com/sujal-lgtm/Contextify/backend/services/contextify/internal/handlers"
 )
@@ -24,6 +26,17 @@ func main() {
 	if err != nil {
 		logrus.Fatalf("Failed to load config: %v", err)
 	}
+
+	// Initialize database connection
+	database, err := db.NewDB(cfg.DatabaseURL)
+	if err != nil {
+		logrus.Fatalf("Failed to connect to DB: %v", err)
+	}
+
+	defer database.Conn.Close()
+
+	// Initialize Handlers with DB
+	h := handlers.NewHandlers(database)
 
 	// Create router
 	router := mux.NewRouter()
@@ -41,6 +54,16 @@ func main() {
 
 	// Metrics endpoint
 	router.HandleFunc("/metrics", handlers.MetricsHandler).Methods("GET")
+
+	router.HandleFunc("/context/{trace_id}", h.GetContextByTraceID).Methods("GET")
+	router.HandleFunc("/anomalies", h.GetAnomaliesByService).Methods("GET")
+
+	// Start Kafka consumer with DB reference
+	go func() {
+		if err := consumer.Start(cfg.KafkaBrokers, "contextify-events", database); err != nil {
+			logrus.Fatalf("Kafka consumer failed: %v", err)
+		}
+	}()
 
 	// Start gRPC server
 	grpcShutdown := grpcserver.StartGrpcServer(cfg.GrpcPort)

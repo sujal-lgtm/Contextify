@@ -54,11 +54,30 @@ services:
       retries: 3
       start_period: 40s
 
+  postgres:
+    image: postgres:15
+    container_name: contextify-postgres
+    networks:
+      - contextify-net
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: contextify
+      POSTGRES_PASSWORD: contextify
+      POSTGRES_DB: contextify
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U contextify"]
+      interval: 5s
+      retries: 5
+
   contextify:
     container_name: contextify
     build:
-      context: ../backend/services/contextify
-      dockerfile: Dockerfile
+      context: ../backend
+      dockerfile: services/contextify/Dockerfile
     networks:
       - contextify-net
     ports:
@@ -68,61 +87,39 @@ services:
       - REST_PORT=8080
       - GRPC_PORT=50051
       - KAFKA_BROKERS=kafka:9092
+      - DATABASE_URL=postgres://contextify:contextify@postgres:5432/contextify?sslmode=disable
     depends_on:
       kafka:
         condition: service_healthy
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "wget",
-          "--no-verbose",
-          "--tries=1",
-          "--spider",
-          "http://localhost:8080/health",
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   anomaly:
     container_name: anomaly
     build:
-      context: ../backend/services/anomaly
-      dockerfile: Dockerfile
+      context: ../backend
+      dockerfile: services/anomaly/Dockerfile
     networks:
       - contextify-net
-    depends_on:
-      kafka:
-        condition: service_healthy
     ports:
       - "8081:8081"
     environment:
       - KAFKA_BROKERS=kafka:9092
+      - DATABASE_URL=postgres://contextify:contextify@postgres:5432/contextify?sslmode=disable
       - HTTP_PORT=8081
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "wget",
-          "--no-verbose",
-          "--tries=1",
-          "--spider",
-          "http://localhost:8081/health",
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
   anomaly-producer:
     container_name: anomaly-producer
     build:
-      context: ../backend/services/anomaly
-      dockerfile: Dockerfile.producer
+      context: ../backend
+      dockerfile: services/anomaly/Dockerfile.producer
     networks:
       - contextify-net
     depends_on:
@@ -130,28 +127,9 @@ services:
         condition: service_healthy
     environment:
       - KAFKA_BROKERS=kafka:9092
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "ps",
-          "aux",
-          "|",
-          "grep",
-          "anomaly-producer",
-          "|",
-          "grep",
-          "-v",
-          "grep",
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
     restart: unless-stopped
 
 volumes:
   zookeeper_data:
-    driver: local
   kafka_data:
-    driver: local
+  postgres-data:

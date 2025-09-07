@@ -1,0 +1,1 @@
+ALTER TABLE anomalies ADD COLUMN trace_id TEXT;
